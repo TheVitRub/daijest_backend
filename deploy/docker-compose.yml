@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: daijest_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-djst}
+      POSTGRES_USER: ${POSTGRES_USER:-djst}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-djst}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - djst-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-djst} -d ${POSTGRES_DB:-djst}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+    container_name: daijest_backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-djst}:${POSTGRES_PASSWORD:-djst}@postgres:5432/${POSTGRES_DB:-djst}?sslmode=disable
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      MIGRATIONS_DIR: /app/migrations
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: daijest_frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
+volumes:
+  djst-postgres:
+

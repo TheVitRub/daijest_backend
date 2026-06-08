@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Check deploy compose
+        run: docker compose -f deploy/docker-compose.yml config >/dev/null
+
       - name: Deploy backend over SSH
         shell: bash
         run: |
@@ -38,31 +41,48 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
-          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'REMOTE'
+          APP_DIR='${{ secrets.APP_DIR }}'
+          if [ -z "$APP_DIR" ]; then
+            APP_DIR="$(ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'printf "%s" "$HOME/daijest"')"
+          fi
+          APP_DIR_Q="$(printf '%q' "$APP_DIR")"
+
+          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p $APP_DIR_Q"
+          scp -i ~/.ssh/deploy_key deploy/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:$APP_DIR/docker-compose.yml"
+          scp -i ~/.ssh/deploy_key deploy/.env.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:$APP_DIR/.env.example"
+
+          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "APP_DIR=$APP_DIR_Q bash -s" <<'REMOTE'
           set -Eeuo pipefail
 
-          APP_DIR="$HOME/daijest"
+          APP_DIR="${APP_DIR:-$HOME/daijest}"
           mkdir -p "$APP_DIR"
           cd "$APP_DIR"
-          test -f .env
-          test -f docker-compose.yml
+          if [ ! -f .env ]; then
+            cp .env.example .env
+          fi
 
           exec 9>.deploy.lock
           flock 9
 
-          REPO_URL="git@github.com-daijest-backend:TheVitRub/daijest_backend.git"
+          sync_repo() {
+            dir="$1"
+            repo_url="$2"
 
-          if [ ! -d backend/.git ]; then
-            git clone --branch main "$REPO_URL" backend
-          else
-            git -C backend remote set-url origin "$REPO_URL"
-            git -C backend fetch --prune origin main
-            git -C backend reset --hard origin/main
-          fi
+            if [ ! -d "$dir/.git" ]; then
+              rm -rf "$dir"
+              git clone --branch main "$repo_url" "$dir"
+            else
+              git -C "$dir" remote set-url origin "$repo_url"
+              git -C "$dir" fetch --prune origin main
+              git -C "$dir" reset --hard origin/main
+            fi
+          }
+
+          sync_repo backend git@github.com-daijest-backend:TheVitRub/daijest_backend.git
+          sync_repo frontend git@github.com-daijest-frontend:TheVitRub/daijest_front.git
 
           docker compose -p daijest up -d postgres
           docker compose -p daijest build backend
           docker compose -p daijest up -d --no-build --remove-orphans backend
           docker compose -p daijest ps
           REMOTE
-
