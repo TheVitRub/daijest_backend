@@ -148,6 +148,24 @@ func (s *PostgresStore) AutosaveDigest(ctx context.Context, userID, digestID, ti
 	return digest, revision, tx.Commit()
 }
 
+func (s *PostgresStore) DeleteDigest(ctx context.Context, userID, digestID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM digests
+		WHERE id = $1 AND user_id = $2
+	`, digestID, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PostgresStore) ListRevisions(ctx context.Context, userID, digestID string) ([]Revision, error) {
 	if _, err := s.GetDigest(ctx, userID, digestID); err != nil {
 		return nil, err

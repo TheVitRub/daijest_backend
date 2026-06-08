@@ -53,6 +53,7 @@ type Store interface {
 	CreateDigest(ctx context.Context, userID, title string, state json.RawMessage, action string) (Digest, Revision, error)
 	GetDigest(ctx context.Context, userID, digestID string) (Digest, error)
 	AutosaveDigest(ctx context.Context, userID, digestID, title string, state json.RawMessage, action string) (Digest, Revision, error)
+	DeleteDigest(ctx context.Context, userID, digestID string) error
 	ListRevisions(ctx context.Context, userID, digestID string) ([]Revision, error)
 	GetRevision(ctx context.Context, userID, digestID, revisionID string) (Revision, error)
 }

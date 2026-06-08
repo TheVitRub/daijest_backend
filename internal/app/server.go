@@ -179,16 +179,23 @@ func (s *Server) handleDigestByID(w http.ResponseWriter, r *http.Request) {
 	digestID := parts[0]
 
 	if len(parts) == 1 {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			digest, err := s.store.GetDigest(r.Context(), user.ID, digestID)
+			if err != nil {
+				writeStoreError(w, err, "digest not found")
+				return
+			}
+			writeJSON(w, http.StatusOK, digestResponse{Digest: digest})
+		case http.MethodDelete:
+			if err := s.store.DeleteDigest(r.Context(), user.ID, digestID); err != nil {
+				writeStoreError(w, err, "digest not found")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
 			methodNotAllowed(w)
-			return
 		}
-		digest, err := s.store.GetDigest(r.Context(), user.ID, digestID)
-		if err != nil {
-			writeStoreError(w, err, "digest not found")
-			return
-		}
-		writeJSON(w, http.StatusOK, digestResponse{Digest: digest})
 		return
 	}
 
@@ -196,7 +203,15 @@ func (s *Server) handleDigestByID(w http.ResponseWriter, r *http.Request) {
 	case "autosave":
 		s.handleAutosave(w, r, user, digestID)
 	case "revisions":
-		s.handleRevisions(w, r, user, digestID)
+		if len(parts) == 2 {
+			s.handleRevisions(w, r, user, digestID)
+			return
+		}
+		if len(parts) == 3 {
+			s.handleRevisionByID(w, r, user, digestID, parts[2])
+			return
+		}
+		writeError(w, http.StatusNotFound, "route not found")
 	case "rollback":
 		s.handleRollback(w, r, user, digestID)
 	case "export":
@@ -266,6 +281,19 @@ func (s *Server) handleRevisions(w http.ResponseWriter, r *http.Request, user Us
 		return
 	}
 	writeJSON(w, http.StatusOK, revisionsResponse{Revisions: revisions})
+}
+
+func (s *Server) handleRevisionByID(w http.ResponseWriter, r *http.Request, user User, digestID, revisionID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	revision, err := s.store.GetRevision(r.Context(), user.ID, digestID, revisionID)
+	if err != nil {
+		writeStoreError(w, err, "revision not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, revisionResponse{Revision: revision})
 }
 
 func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, user User, digestID string) {

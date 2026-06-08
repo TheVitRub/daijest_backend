@@ -82,6 +82,13 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	if len(revisions.Revisions) != 2 {
 		t.Fatalf("revision count = %d", len(revisions.Revisions))
 	}
+	openedRevision := getJSON[revisionResponse](t, server, "/api/digests/"+created.Digest.ID+"/revisions/"+revisions.Revisions[0].ID, login.Token, http.StatusOK)
+	if openedRevision.Revision.Version != 1 {
+		t.Fatalf("opened revision version = %d", openedRevision.Revision.Version)
+	}
+	if string(openedRevision.Revision.State) != `{"companies":[],"digestCover":"data:image/png;base64,AAA","letter":{"paragraphs":"One","title":"Initial"}}` {
+		t.Fatalf("opened revision state = %s", openedRevision.Revision.State)
+	}
 
 	rolledBack := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests/"+created.Digest.ID+"/rollback", login.Token, map[string]any{
 		"revisionId": revisions.Revisions[0].ID,
@@ -110,6 +117,41 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	}
 	if string(imported.Digest.State) != string(exported.State) {
 		t.Fatalf("imported state = %s", imported.Digest.State)
+	}
+}
+
+func TestDigestDeleteAndRevisionPrivacy(t *testing.T) {
+	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
+
+	owner := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"email":    "owner@example.com",
+		"password": "secret-123",
+	}, http.StatusCreated)
+	other := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"email":    "other@example.com",
+		"password": "secret-123",
+	}, http.StatusCreated)
+
+	created := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests", owner.Token, map[string]any{
+		"title": "Private project",
+		"state": map[string]any{"letter": map[string]any{"title": "Private"}},
+	}, http.StatusCreated)
+	saved := postJSON[revisionResponse](t, server, http.MethodPut, "/api/digests/"+created.Digest.ID+"/autosave", owner.Token, map[string]any{
+		"title":  "Private project",
+		"state":  map[string]any{"letter": map[string]any{"title": "Private v2"}},
+		"action": "typed",
+	}, http.StatusOK)
+
+	getJSON[errorResponse](t, server, "/api/digests/"+created.Digest.ID+"/revisions/"+saved.Revision.ID, other.Token, http.StatusNotFound)
+	deleteDigest(t, server, created.Digest.ID, other.Token, http.StatusNotFound)
+
+	deleteDigest(t, server, created.Digest.ID, owner.Token, http.StatusNoContent)
+	getJSON[errorResponse](t, server, "/api/digests/"+created.Digest.ID, owner.Token, http.StatusNotFound)
+	getJSON[errorResponse](t, server, "/api/digests/"+created.Digest.ID+"/revisions", owner.Token, http.StatusNotFound)
+
+	listed := getJSON[digestsResponse](t, server, "/api/digests", owner.Token, http.StatusOK)
+	if len(listed.Digests) != 0 {
+		t.Fatalf("deleted digest still listed: %+v", listed.Digests)
 	}
 }
 
@@ -146,6 +188,19 @@ func postJSON[T any](t *testing.T, server *Server, method, path, token string, b
 		t.Fatalf("decode response: %v; body = %s", err, res.Body.String())
 	}
 	return out
+}
+
+func deleteDigest(t *testing.T, server *Server, digestID, token string, wantStatus int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/api/digests/"+digestID, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res := httptest.NewRecorder()
+	server.Routes().ServeHTTP(res, req)
+	if res.Code != wantStatus {
+		t.Fatalf("DELETE /api/digests/%s status = %d, body = %s", digestID, res.Code, res.Body.String())
+	}
 }
 
 func getJSON[T any](t *testing.T, server *Server, path, token string, wantStatus int) T {

@@ -161,6 +161,18 @@ func (s *MemoryStore) AutosaveDigest(_ context.Context, userID, digestID, title 
 	return digest, revision, nil
 }
 
+func (s *MemoryStore) DeleteDigest(_ context.Context, userID, digestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	digest, ok := s.digests[digestID]
+	if !ok || digest.UserID != userID {
+		return ErrNotFound
+	}
+	delete(s.digests, digestID)
+	delete(s.revisions, digestID)
+	return nil
+}
+
 func (s *MemoryStore) ListRevisions(_ context.Context, userID, digestID string) ([]Revision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
