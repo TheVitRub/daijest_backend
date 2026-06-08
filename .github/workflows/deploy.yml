@@ -1,0 +1,68 @@
+name: Deploy backend
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: daijest-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Deploy backend over SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+
+          APP_DIR="$HOME/daijest"
+          mkdir -p "$APP_DIR"
+          cd "$APP_DIR"
+          test -f .env
+          test -f docker-compose.yml
+
+          exec 9>.deploy.lock
+          flock 9
+
+          REPO_URL="git@github.com-daijest-backend:TheVitRub/daijest_backend.git"
+
+          if [ ! -d backend/.git ]; then
+            git clone --branch main "$REPO_URL" backend
+          else
+            git -C backend remote set-url origin "$REPO_URL"
+            git -C backend fetch --prune origin main
+            git -C backend reset --hard origin/main
+          fi
+
+          docker compose -p daijest up -d postgres
+          docker compose -p daijest build backend
+          docker compose -p daijest up -d --no-build --remove-orphans backend
+          docker compose -p daijest ps
+          REMOTE
+
