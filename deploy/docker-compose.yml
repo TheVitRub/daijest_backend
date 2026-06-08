@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-djst}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-djst}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-127.0.0.1:15436}:5432"
     volumes:
       - djst-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -29,7 +29,7 @@ services:
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
       MIGRATIONS_DIR: /app/migrations
     ports:
-      - "${BACKEND_PORT:-8080}:8080"
+      - "${BACKEND_PORT:-127.0.0.1:18093}:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
@@ -44,8 +44,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-5173}:80"
+      - "${FRONTEND_PORT:-172.17.0.1:5178}:80"
 
 volumes:
   djst-postgres:
-

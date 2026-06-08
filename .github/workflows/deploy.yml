@@ -63,6 +63,20 @@ jobs:
           cd "$APP_DIR"
           if [ ! -f .env ]; then
             cp .env.example .env
+          else
+            migrate_default_env() {
+              key="$1"
+              old_value="$2"
+              new_value="$3"
+
+              if grep -qx "${key}=${old_value}" .env; then
+                sed -i "s|^${key}=.*|${key}=${new_value}|" .env
+              fi
+            }
+
+            migrate_default_env POSTGRES_PORT 5432 127.0.0.1:15436
+            migrate_default_env BACKEND_PORT 8080 127.0.0.1:18093
+            migrate_default_env FRONTEND_PORT 5173 172.17.0.1:5178
           fi
 
           exec 9>.deploy.lock
