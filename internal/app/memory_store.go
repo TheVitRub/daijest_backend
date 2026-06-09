@@ -45,7 +45,7 @@ func (s *MemoryStore) CreateUser(_ context.Context, email, name, passwordHash st
 		Email:        email,
 		Name:         name,
 		PasswordHash: passwordHash,
-		IsAdmin:      len(s.users) == 0, // first user becomes admin
+		IsAdmin:      !s.hasAdminLocked(),
 		CreatedAt:    time.Now().UTC(),
 	}
 	s.users[user.ID] = user
@@ -243,6 +243,15 @@ func (s *MemoryStore) GetRevision(_ context.Context, userID, digestID, revisionI
 		}
 	}
 	return Revision{}, ErrNotFound
+}
+
+func (s *MemoryStore) hasAdminLocked() bool {
+	for _, u := range s.users {
+		if u.IsAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryStore) newIDLocked(prefix string) string {

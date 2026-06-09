@@ -22,10 +22,10 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 const userColumns = `id::text, email, name, password_hash, access_code, is_admin, created_at`
 
 func (s *PostgresStore) CreateUser(ctx context.Context, email, name, passwordHash string) (User, error) {
-	// First user to register automatically becomes admin.
+	// Becomes admin if no admin exists in the system yet.
 	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO users (email, name, password_hash, is_admin)
-		SELECT $1, $2, $3, NOT EXISTS (SELECT 1 FROM users)
+		SELECT $1, $2, $3, NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true)
 		RETURNING `+userColumns,
 		email, name, passwordHash)
 	return scanUser(row)
