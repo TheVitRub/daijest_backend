@@ -18,22 +18,66 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+// userColumns is the standard column list for all user SELECT queries.
+const userColumns = `id::text, email, name, password_hash, access_code, is_admin, created_at`
+
 func (s *PostgresStore) CreateUser(ctx context.Context, email, name, passwordHash string) (User, error) {
+	// First user to register automatically becomes admin.
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO users (email, name, password_hash)
-		VALUES ($1, $2, $3)
-		RETURNING id::text, email, name, password_hash, created_at
-	`, email, name, passwordHash)
+		INSERT INTO users (email, name, password_hash, is_admin)
+		SELECT $1, $2, $3, NOT EXISTS (SELECT 1 FROM users)
+		RETURNING `+userColumns,
+		email, name, passwordHash)
 	return scanUser(row)
 }
 
 func (s *PostgresStore) FindUserByEmail(ctx context.Context, email string) (User, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id::text, email, name, password_hash, created_at
+		SELECT `+userColumns+`
 		FROM users
 		WHERE email = $1
 	`, email)
 	return scanUser(row)
+}
+
+func (s *PostgresStore) FindUserByCode(ctx context.Context, code string) (User, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+userColumns+`
+		FROM users
+		WHERE access_code = $1
+	`, code)
+	return scanUser(row)
+}
+
+func (s *PostgresStore) CreateManagedUser(ctx context.Context, name, accessCode string) (User, error) {
+	row := s.db.QueryRowContext(ctx, `
+		INSERT INTO users (name, access_code)
+		VALUES ($1, $2)
+		RETURNING `+userColumns,
+		name, accessCode)
+	return scanUser(row)
+}
+
+func (s *PostgresStore) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+userColumns+`
+		FROM users
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
 }
 
 func (s *PostgresStore) CreateSession(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {
@@ -46,7 +90,7 @@ func (s *PostgresStore) CreateSession(ctx context.Context, userID, tokenHash str
 
 func (s *PostgresStore) FindUserBySession(ctx context.Context, tokenHash string, now time.Time) (User, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT u.id::text, u.email, u.name, u.password_hash, u.created_at
+		SELECT u.id::text, u.email, u.name, u.password_hash, u.access_code, u.is_admin, u.created_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > $2
@@ -54,9 +98,12 @@ func (s *PostgresStore) FindUserBySession(ctx context.Context, tokenHash string,
 	return scanUser(row)
 }
 
+// digestColumns is the standard column list for all digest SELECT queries.
+const digestColumns = `id::text, user_id::text, title, digest_type, current_version, current_state, created_at, updated_at`
+
 func (s *PostgresStore) ListDigests(ctx context.Context, userID string) ([]Digest, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, user_id::text, title, current_version, current_state, created_at, updated_at
+		SELECT `+digestColumns+`
 		FROM digests
 		WHERE user_id = $1
 		ORDER BY updated_at DESC
@@ -77,7 +124,7 @@ func (s *PostgresStore) ListDigests(ctx context.Context, userID string) ([]Diges
 	return digests, rows.Err()
 }
 
-func (s *PostgresStore) CreateDigest(ctx context.Context, userID, title string, state json.RawMessage, action string) (Digest, Revision, error) {
+func (s *PostgresStore) CreateDigest(ctx context.Context, userID, title string, digestType DigestType, state json.RawMessage, action string) (Digest, Revision, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Digest{}, Revision{}, err
@@ -85,10 +132,10 @@ func (s *PostgresStore) CreateDigest(ctx context.Context, userID, title string, 
 	defer tx.Rollback()
 
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO digests (user_id, title, current_version, current_state)
-		VALUES ($1, $2, 1, $3)
-		RETURNING id::text, user_id::text, title, current_version, current_state, created_at, updated_at
-	`, userID, title, state)
+		INSERT INTO digests (user_id, title, digest_type, current_version, current_state)
+		VALUES ($1, $2, $3, 1, $4)
+		RETURNING `+digestColumns,
+		userID, title, string(digestType), state)
 	digest, err := scanDigest(row)
 	if err != nil {
 		return Digest{}, Revision{}, err
@@ -108,14 +155,14 @@ func (s *PostgresStore) CreateDigest(ctx context.Context, userID, title string, 
 
 func (s *PostgresStore) GetDigest(ctx context.Context, userID, digestID string) (Digest, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id::text, user_id::text, title, current_version, current_state, created_at, updated_at
+		SELECT `+digestColumns+`
 		FROM digests
 		WHERE id = $1 AND user_id = $2
 	`, digestID, userID)
 	return scanDigest(row)
 }
 
-func (s *PostgresStore) AutosaveDigest(ctx context.Context, userID, digestID, title string, state json.RawMessage, action string) (Digest, Revision, error) {
+func (s *PostgresStore) AutosaveDigest(ctx context.Context, userID, digestID, title string, digestType DigestType, state json.RawMessage, action string) (Digest, Revision, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Digest{}, Revision{}, err
@@ -125,12 +172,13 @@ func (s *PostgresStore) AutosaveDigest(ctx context.Context, userID, digestID, ti
 	row := tx.QueryRowContext(ctx, `
 		UPDATE digests
 		SET title = $3,
+		    digest_type = CASE WHEN $4 = '' THEN digest_type ELSE $4 END,
 		    current_version = current_version + 1,
-		    current_state = $4,
+		    current_state = $5,
 		    updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id::text, user_id::text, title, current_version, current_state, created_at, updated_at
-	`, digestID, userID, title, state)
+		RETURNING `+digestColumns,
+		digestID, userID, title, string(digestType), state)
 	digest, err := scanDigest(row)
 	if err != nil {
 		return Digest{}, Revision{}, err
@@ -207,14 +255,22 @@ type scanner interface {
 
 func scanUser(row scanner) (User, error) {
 	var user User
-	err := row.Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &user.CreatedAt)
+	var email sql.NullString
+	var pwHash sql.NullString
+	var accessCode sql.NullString
+	err := row.Scan(&user.ID, &email, &user.Name, &pwHash, &accessCode, &user.IsAdmin, &user.CreatedAt)
+	user.Email = email.String
+	user.PasswordHash = pwHash.String
+	user.AccessCode = accessCode.String
 	return user, mapSQLError(err)
 }
 
 func scanDigest(row scanner) (Digest, error) {
 	var digest Digest
 	var raw []byte
-	err := row.Scan(&digest.ID, &digest.UserID, &digest.Title, &digest.CurrentVersion, &raw, &digest.CreatedAt, &digest.UpdatedAt)
+	var digestType string
+	err := row.Scan(&digest.ID, &digest.UserID, &digest.Title, &digestType, &digest.CurrentVersion, &raw, &digest.CreatedAt, &digest.UpdatedAt)
+	digest.DigestType = DigestType(digestType)
 	digest.State = cloneRaw(raw)
 	return digest, mapSQLError(err)
 }

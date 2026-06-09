@@ -11,6 +11,7 @@ type MemoryStore struct {
 	mu        sync.Mutex
 	users     map[string]User
 	emailToID map[string]string
+	codeToID  map[string]string
 	sessions  map[string]memorySession
 	digests   map[string]Digest
 	revisions map[string][]Revision
@@ -26,6 +27,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		users:     map[string]User{},
 		emailToID: map[string]string{},
+		codeToID:  map[string]string{},
 		sessions:  map[string]memorySession{},
 		digests:   map[string]Digest{},
 		revisions: map[string][]Revision{},
@@ -43,6 +45,7 @@ func (s *MemoryStore) CreateUser(_ context.Context, email, name, passwordHash st
 		Email:        email,
 		Name:         name,
 		PasswordHash: passwordHash,
+		IsAdmin:      len(s.users) == 0, // first user becomes admin
 		CreatedAt:    time.Now().UTC(),
 	}
 	s.users[user.ID] = user
@@ -58,6 +61,44 @@ func (s *MemoryStore) FindUserByEmail(_ context.Context, email string) (User, er
 		return User{}, ErrNotFound
 	}
 	return s.users[id], nil
+}
+
+func (s *MemoryStore) FindUserByCode(_ context.Context, code string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.codeToID[code]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	return s.users[id], nil
+}
+
+func (s *MemoryStore) CreateManagedUser(_ context.Context, name, accessCode string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.codeToID[accessCode]; ok {
+		return User{}, ErrConflict
+	}
+	user := User{
+		ID:         s.newIDLocked("usr"),
+		Name:       name,
+		AccessCode: accessCode,
+		IsAdmin:    false,
+		CreatedAt:  time.Now().UTC(),
+	}
+	s.users[user.ID] = user
+	s.codeToID[accessCode] = user.ID
+	return user, nil
+}
+
+func (s *MemoryStore) ListUsers(_ context.Context) ([]User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]User, 0, len(s.users))
+	for _, u := range s.users {
+		out = append(out, u)
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) CreateSession(_ context.Context, userID, tokenHash string, expiresAt time.Time) error {
@@ -96,7 +137,7 @@ func (s *MemoryStore) ListDigests(_ context.Context, userID string) ([]Digest, e
 	return out, nil
 }
 
-func (s *MemoryStore) CreateDigest(_ context.Context, userID, title string, state json.RawMessage, action string) (Digest, Revision, error) {
+func (s *MemoryStore) CreateDigest(_ context.Context, userID, title string, digestType DigestType, state json.RawMessage, action string) (Digest, Revision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.users[userID]; !ok {
@@ -107,6 +148,7 @@ func (s *MemoryStore) CreateDigest(_ context.Context, userID, title string, stat
 		ID:             s.newIDLocked("dig"),
 		UserID:         userID,
 		Title:          title,
+		DigestType:     digestType,
 		CurrentVersion: 1,
 		State:          cloneRaw(state),
 		CreatedAt:      now,
@@ -136,7 +178,7 @@ func (s *MemoryStore) GetDigest(_ context.Context, userID, digestID string) (Dig
 	return digest, nil
 }
 
-func (s *MemoryStore) AutosaveDigest(_ context.Context, userID, digestID, title string, state json.RawMessage, action string) (Digest, Revision, error) {
+func (s *MemoryStore) AutosaveDigest(_ context.Context, userID, digestID, title string, digestType DigestType, state json.RawMessage, action string) (Digest, Revision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	digest, ok := s.digests[digestID]
@@ -145,6 +187,9 @@ func (s *MemoryStore) AutosaveDigest(_ context.Context, userID, digestID, title 
 	}
 	now := time.Now().UTC()
 	digest.Title = title
+	if digestType != "" {
+		digest.DigestType = digestType
+	}
 	digest.CurrentVersion++
 	digest.State = cloneRaw(state)
 	digest.UpdatedAt = now
@@ -180,7 +225,7 @@ func (s *MemoryStore) ListRevisions(_ context.Context, userID, digestID string) 
 	if !ok || digest.UserID != userID {
 		return nil, ErrNotFound
 	}
-	revisions := append([]Revision(nil), s.revisions[digestID]...)
+	revisions := append([]Revision(nil), s.revisions[digest.ID]...)
 	return revisions, nil
 }
 

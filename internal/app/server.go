@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -32,8 +34,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/auth/register", s.handleRegister)
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 	mux.HandleFunc("/api/me", s.handleMe)
+	mux.HandleFunc("/api/digest-types", s.handleDigestTypes)
 	mux.HandleFunc("/api/digests", s.handleDigests)
 	mux.HandleFunc("/api/digests/", s.handleDigestByID)
+	mux.HandleFunc("/api/admin/users", s.handleAdminUsers)
 	return mux
 }
 
@@ -93,14 +97,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Code     string `json:"code"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
-	user, err := s.store.FindUserByEmail(r.Context(), normalizeEmail(req.Email))
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
-		writeError(w, http.StatusUnauthorized, "invalid email or password")
-		return
+
+	var user User
+	var err error
+
+	if req.Code != "" {
+		// Code-based login for managed users.
+		user, err = s.store.FindUserByCode(r.Context(), strings.TrimSpace(req.Code))
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid access code")
+			return
+		}
+	} else {
+		// Email + password login.
+		user, err = s.store.FindUserByEmail(r.Context(), normalizeEmail(req.Email))
+		if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+			writeError(w, http.StatusUnauthorized, "invalid email or password")
+			return
+		}
 	}
 
 	token, err := s.createSession(r, user.ID)
@@ -123,6 +142,61 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]User{"user": publicUser(user)})
 }
 
+// handleDigestTypes returns the list of available digest types.
+func (s *Server) handleDigestTypes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"digestTypes": AllDigestTypes})
+}
+
+// handleAdminUsers manages admin-only user creation and listing.
+func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	_ = admin
+
+	switch r.Method {
+	case http.MethodGet:
+		users, err := s.store.ListUsers(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list users")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminUsersResponse{Users: users})
+
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if !readJSON(w, r, &req) {
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		code, err := generateAccessCode()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not generate access code")
+			return
+		}
+		user, err := s.store.CreateManagedUser(r.Context(), name, code)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not create user")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]User{"user": user})
+
+	default:
+		methodNotAllowed(w)
+	}
+}
+
 func (s *Server) handleDigests(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
@@ -139,9 +213,10 @@ func (s *Server) handleDigests(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, digestsResponse{Digests: digests})
 	case http.MethodPost:
 		var req struct {
-			Title  string          `json:"title"`
-			State  json.RawMessage `json:"state"`
-			Action string          `json:"action"`
+			Title      string          `json:"title"`
+			DigestType string          `json:"digestType"`
+			State      json.RawMessage `json:"state"`
+			Action     string          `json:"action"`
 		}
 		if !readJSON(w, r, &req) {
 			return
@@ -150,7 +225,7 @@ func (s *Server) handleDigests(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		digest, _, err := s.store.CreateDigest(r.Context(), user.ID, cleanTitle(req.Title), state, defaultAction(req.Action, "created"))
+		digest, _, err := s.store.CreateDigest(r.Context(), user.ID, cleanTitle(req.Title), resolveDigestType(req.DigestType), state, defaultAction(req.Action, "created"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not create digest")
 			return
@@ -227,8 +302,9 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, user User)
 		return
 	}
 	var req struct {
-		Title string          `json:"title"`
-		State json.RawMessage `json:"state"`
+		Title      string          `json:"title"`
+		DigestType string          `json:"digestType"`
+		State      json.RawMessage `json:"state"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -237,7 +313,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, user User)
 	if !ok {
 		return
 	}
-	digest, _, err := s.store.CreateDigest(r.Context(), user.ID, cleanTitle(req.Title), state, "imported")
+	digest, _, err := s.store.CreateDigest(r.Context(), user.ID, cleanTitle(req.Title), resolveDigestType(req.DigestType), state, "imported")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not import digest")
 		return
@@ -251,9 +327,10 @@ func (s *Server) handleAutosave(w http.ResponseWriter, r *http.Request, user Use
 		return
 	}
 	var req struct {
-		Title  string          `json:"title"`
-		State  json.RawMessage `json:"state"`
-		Action string          `json:"action"`
+		Title      string          `json:"title"`
+		DigestType string          `json:"digestType"`
+		State      json.RawMessage `json:"state"`
+		Action     string          `json:"action"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -262,7 +339,8 @@ func (s *Server) handleAutosave(w http.ResponseWriter, r *http.Request, user Use
 	if !ok {
 		return
 	}
-	_, revision, err := s.store.AutosaveDigest(r.Context(), user.ID, digestID, cleanTitle(req.Title), state, defaultAction(req.Action, "autosaved"))
+	// Pass empty DigestType to preserve the current value when not provided.
+	_, revision, err := s.store.AutosaveDigest(r.Context(), user.ID, digestID, cleanTitle(req.Title), DigestType(req.DigestType), state, defaultAction(req.Action, "autosaved"))
 	if err != nil {
 		writeStoreError(w, err, "digest not found")
 		return
@@ -317,7 +395,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, user Use
 		writeStoreError(w, err, "digest not found")
 		return
 	}
-	digest, _, err := s.store.AutosaveDigest(r.Context(), user.ID, digestID, current.Title, revision.State, "rollback to version "+itoa(revision.Version))
+	digest, _, err := s.store.AutosaveDigest(r.Context(), user.ID, digestID, current.Title, current.DigestType, revision.State, "rollback to version "+itoa(revision.Version))
 	if err != nil {
 		writeStoreError(w, err, "digest not found")
 		return
@@ -359,6 +437,18 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (User, bool
 	user, err := s.store.FindUserBySession(r.Context(), tokenHash(strings.TrimPrefix(header, "Bearer ")), time.Now())
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "authorization required")
+		return User{}, false
+	}
+	return user, true
+}
+
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (User, bool) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return User{}, false
+	}
+	if !user.IsAdmin {
+		writeError(w, http.StatusForbidden, "admin access required")
 		return User{}, false
 	}
 	return user, true
@@ -434,6 +524,15 @@ func normalizeState(w http.ResponseWriter, raw json.RawMessage) (json.RawMessage
 	return normalized, true
 }
 
+// resolveDigestType returns the provided type if valid, otherwise defaults to analytical.
+func resolveDigestType(raw string) DigestType {
+	t := DigestType(raw)
+	if t.Valid() {
+		return t
+	}
+	return DigestTypeAnalytical
+}
+
 func publicUser(user User) User {
 	user.PasswordHash = ""
 	return user
@@ -450,6 +549,15 @@ func newToken() (string, error) {
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// generateAccessCode produces a cryptographically random 8-digit numeric code.
+func generateAccessCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(100_000_000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%08d", n.Int64()), nil
 }
 
 func itoa(value int) string {
