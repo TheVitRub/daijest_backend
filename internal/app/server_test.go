@@ -165,6 +165,72 @@ func TestDigestRoutesRequireAuth(t *testing.T) {
 	}, http.StatusUnauthorized)
 }
 
+func TestAdminCanDeleteManagedUsers(t *testing.T) {
+	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
+
+	admin := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"email":    "admin@example.com",
+		"password": "secret-123",
+	}, http.StatusCreated)
+	created := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{
+		"name": "Managed user",
+	}, http.StatusCreated)
+	managed := created["user"]
+	if managed.ID == "" || managed.AccessCode == "" {
+		t.Fatalf("managed user missing id or access code: %+v", managed)
+	}
+
+	deleteUser(t, server, managed.ID, admin.Token, http.StatusNoContent)
+
+	listed := getJSON[adminUsersResponse](t, server, "/api/admin/users", admin.Token, http.StatusOK)
+	for _, user := range listed.Users {
+		if user.ID == managed.ID {
+			t.Fatalf("deleted user still listed: %+v", user)
+		}
+	}
+	postJSON[errorResponse](t, server, http.MethodPost, "/api/auth/login", "", map[string]any{
+		"code": managed.AccessCode,
+	}, http.StatusUnauthorized)
+}
+
+func TestAdminDeleteUserRequiresAdminAndDoesNotDeleteSelf(t *testing.T) {
+	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
+
+	admin := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"email":    "admin@example.com",
+		"password": "secret-123",
+	}, http.StatusCreated)
+	regular := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
+		"email":    "regular@example.com",
+		"password": "secret-123",
+	}, http.StatusCreated)
+	created := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{
+		"name": "Managed user",
+	}, http.StatusCreated)
+	managed := created["user"]
+
+	deleteUser(t, server, managed.ID, regular.Token, http.StatusForbidden)
+	deleteUser(t, server, admin.User.ID, admin.Token, http.StatusForbidden)
+
+	listed := getJSON[adminUsersResponse](t, server, "/api/admin/users", admin.Token, http.StatusOK)
+	foundManaged := false
+	foundAdmin := false
+	for _, user := range listed.Users {
+		if user.ID == managed.ID {
+			foundManaged = true
+		}
+		if user.ID == admin.User.ID {
+			foundAdmin = true
+		}
+	}
+	if !foundManaged {
+		t.Fatalf("managed user was deleted by non-admin")
+	}
+	if !foundAdmin {
+		t.Fatalf("admin self-delete removed admin")
+	}
+}
+
 func postJSON[T any](t *testing.T, server *Server, method, path, token string, body any, wantStatus int) T {
 	t.Helper()
 
@@ -200,6 +266,19 @@ func deleteDigest(t *testing.T, server *Server, digestID, token string, wantStat
 	server.Routes().ServeHTTP(res, req)
 	if res.Code != wantStatus {
 		t.Fatalf("DELETE /api/digests/%s status = %d, body = %s", digestID, res.Code, res.Body.String())
+	}
+}
+
+func deleteUser(t *testing.T, server *Server, userID, token string, wantStatus int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/"+userID, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res := httptest.NewRecorder()
+	server.Routes().ServeHTTP(res, req)
+	if res.Code != wantStatus {
+		t.Fatalf("DELETE /api/admin/users/%s status = %d, body = %s", userID, res.Code, res.Body.String())
 	}
 }
 

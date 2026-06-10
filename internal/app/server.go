@@ -38,6 +38,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/digests", s.handleDigests)
 	mux.HandleFunc("/api/digests/", s.handleDigestByID)
 	mux.HandleFunc("/api/admin/users", s.handleAdminUsers)
+	mux.HandleFunc("/api/admin/users/", s.handleAdminUserByID)
 	return corsMiddleware(mux)
 }
 
@@ -208,6 +209,31 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodDelete {
+		methodNotAllowed(w)
+		return
+	}
+	userID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/users/"), "/")
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "user id is required")
+		return
+	}
+	if userID == admin.ID {
+		writeError(w, http.StatusForbidden, "cannot delete current admin")
+		return
+	}
+	if err := s.store.DeleteUser(r.Context(), userID); err != nil {
+		writeStoreError(w, err, "user not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDigests(w http.ResponseWriter, r *http.Request) {

@@ -80,6 +80,24 @@ func (s *PostgresStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
+func (s *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM users
+		WHERE id = $1
+	`, userID)
+	if err != nil {
+		return mapSQLError(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PostgresStore) CreateSession(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (user_id, token_hash, expires_at)
