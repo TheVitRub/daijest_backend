@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
@@ -31,7 +30,6 @@ func NewServer(store Store, cfg Config) *Server {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/api/auth/register", s.handleRegister)
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/digest-types", s.handleDigestTypes)
@@ -59,48 +57,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-
-	var req struct {
-		Email    string `json:"email"`
-		Name     string `json:"name"`
-		Password string `json:"password"`
-	}
-	if !readJSON(w, r, &req) {
-		return
-	}
-	email := normalizeEmail(req.Email)
-	if email == "" || len(req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "email and password with at least 8 characters are required")
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not hash password")
-		return
-	}
-	user, err := s.store.CreateUser(r.Context(), email, strings.TrimSpace(req.Name), string(hash))
-	if err != nil {
-		if errors.Is(err, ErrConflict) {
-			writeError(w, http.StatusConflict, "email already registered")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "could not create user")
-		return
-	}
-
-	token, err := s.createSession(r, user.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create session")
-		return
-	}
-	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: publicUser(user)})
-}
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -109,31 +65,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Code     string `json:"code"`
+		Code string `json:"code"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
 
-	var user User
-	var err error
-
-	if req.Code != "" {
-		// Code-based login for managed users.
-		user, err = s.store.FindUserByCode(r.Context(), strings.TrimSpace(req.Code))
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid access code")
-			return
-		}
-	} else {
-		// Email + password login.
-		user, err = s.store.FindUserByEmail(r.Context(), normalizeEmail(req.Email))
-		if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
-			writeError(w, http.StatusUnauthorized, "invalid email or password")
-			return
-		}
+	user, err := s.store.FindUserByCode(r.Context(), strings.TrimSpace(req.Code))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid access code")
+		return
 	}
 
 	token, err := s.createSession(r, user.ID)
@@ -216,24 +157,38 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Method != http.MethodDelete {
-		methodNotAllowed(w)
-		return
-	}
 	userID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/users/"), "/")
 	if userID == "" {
 		writeError(w, http.StatusBadRequest, "user id is required")
 		return
 	}
-	if userID == admin.ID {
-		writeError(w, http.StatusForbidden, "cannot delete current admin")
-		return
+	switch r.Method {
+	case http.MethodPatch:
+		var req struct {
+			IsAdmin bool `json:"isAdmin"`
+		}
+		if !readJSON(w, r, &req) {
+			return
+		}
+		user, err := s.store.UpdateUserAdmin(r.Context(), userID, req.IsAdmin)
+		if err != nil {
+			writeStoreError(w, err, "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]User{"user": user})
+	case http.MethodDelete:
+		if userID == admin.ID {
+			writeError(w, http.StatusForbidden, "cannot delete current admin")
+			return
+		}
+		if err := s.store.DeleteUser(r.Context(), userID); err != nil {
+			writeStoreError(w, err, "user not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		methodNotAllowed(w)
 	}
-	if err := s.store.DeleteUser(r.Context(), userID); err != nil {
-		writeStoreError(w, err, "user not found")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDigests(w http.ResponseWriter, r *http.Request) {

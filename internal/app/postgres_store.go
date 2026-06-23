@@ -58,6 +58,13 @@ func (s *PostgresStore) CreateManagedUser(ctx context.Context, name, accessCode 
 	return scanUser(row)
 }
 
+func (s *PostgresStore) UpdateUserAdmin(ctx context.Context, userID string, isAdmin bool) (User, error) {
+	row := s.db.QueryRowContext(ctx, `
+		UPDATE users SET is_admin = $1 WHERE id = $2 RETURNING `+userColumns,
+		isAdmin, userID)
+	return scanUser(row)
+}
+
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+userColumns+`
