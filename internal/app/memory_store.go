@@ -103,23 +103,6 @@ func (s *MemoryStore) UpdateUserAdmin(_ context.Context, userID string, isAdmin 
 	return user, nil
 }
 
-func (s *MemoryStore) DeleteUser(_ context.Context, userID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	user, ok := s.users[userID]
-	if !ok {
-		return ErrNotFound
-	}
-	delete(s.users, userID)
-	if user.Email != "" {
-		delete(s.emailToID, user.Email)
-	}
-	if user.AccessCode != "" {
-		delete(s.codeToID, user.AccessCode)
-	}
-	return nil
-}
-
 func (s *MemoryStore) ListUsers(_ context.Context) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
