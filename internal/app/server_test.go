@@ -237,6 +237,43 @@ func TestAdminDeleteUserRequiresAdminAndDoesNotDeleteSelf(t *testing.T) {
 	}
 }
 
+func TestAdminCannotDemoteSelfOrLastAdmin(t *testing.T) {
+	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
+	admin := setupAdmin(t, server, "11111111")
+
+	// Cannot demote self.
+	patchUser(t, server, admin.User.ID, admin.Token, false, http.StatusForbidden)
+
+	// Cannot demote last admin even if targeting another user (add second admin first).
+	secondCreated := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{"name": "Second"}, http.StatusCreated)
+	patchUser(t, server, secondCreated["user"].ID, admin.Token, true, http.StatusOK)
+
+	// Now there are two admins — can demote the second one.
+	patchUser(t, server, secondCreated["user"].ID, admin.Token, false, http.StatusOK)
+
+	// Back to one admin — cannot demote again.
+	patchUser(t, server, secondCreated["user"].ID, admin.Token, false, http.StatusForbidden)
+}
+
+func patchUser(t *testing.T, server *Server, userID, token string, isAdmin bool, wantStatus int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/"+userID, bytes.NewBufferString(`{"isAdmin":`+func() string {
+		if isAdmin {
+			return "true"
+		}
+		return "false"
+	}()+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res := httptest.NewRecorder()
+	server.Routes().ServeHTTP(res, req)
+	if res.Code != wantStatus {
+		t.Fatalf("PATCH /api/admin/users/%s status = %d, body = %s", userID, res.Code, res.Body.String())
+	}
+}
+
 func postJSON[T any](t *testing.T, server *Server, method, path, token string, body any, wantStatus int) T {
 	t.Helper()
 
