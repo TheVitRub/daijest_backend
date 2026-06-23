@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,29 +10,42 @@ import (
 	"time"
 )
 
-func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
-	server := NewServer(NewMemoryStore(), Config{
-		SessionTTL: time.Hour,
-	})
+// setupAdmin creates an admin user directly in the store and logs them in via code.
+func setupAdmin(t *testing.T, server *Server, code string) authResponse {
+	t.Helper()
+	ms := server.store.(*MemoryStore)
+	ctx := context.Background()
+	user, err := ms.CreateManagedUser(ctx, "Admin", code)
+	if err != nil {
+		t.Fatalf("create admin user: %v", err)
+	}
+	if _, err = ms.UpdateUserAdmin(ctx, user.ID, true); err != nil {
+		t.Fatalf("promote to admin: %v", err)
+	}
+	return postJSON[authResponse](t, server, http.MethodPost, "/api/auth/login", "", map[string]any{
+		"code": code,
+	}, http.StatusOK)
+}
 
-	user := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
-		"email":    "editor@example.com",
-		"name":     "Editor",
-		"password": "secret-123",
+func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
+	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
+
+	admin := setupAdmin(t, server, "11111111")
+	if admin.Token == "" {
+		t.Fatal("admin token is empty")
+	}
+
+	// Create a managed user to act as editor.
+	created := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{
+		"name": "Editor",
 	}, http.StatusCreated)
-	if user.Token == "" {
-		t.Fatalf("register token is empty")
-	}
-	if user.User.Email != "editor@example.com" {
-		t.Fatalf("registered email = %q", user.User.Email)
-	}
+	editorCode := created["user"].AccessCode
 
 	login := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/login", "", map[string]any{
-		"email":    "editor@example.com",
-		"password": "secret-123",
+		"code": editorCode,
 	}, http.StatusOK)
 	if login.Token == "" {
-		t.Fatalf("login token is empty")
+		t.Fatal("login token is empty")
 	}
 
 	initialState := map[string]any{
@@ -42,15 +56,15 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		},
 		"companies": []any{},
 	}
-	created := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests", login.Token, map[string]any{
+	digest := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests", login.Token, map[string]any{
 		"title": "June digest",
 		"state": initialState,
 	}, http.StatusCreated)
-	if created.Digest.ID == "" {
-		t.Fatalf("created digest id is empty")
+	if digest.Digest.ID == "" {
+		t.Fatal("created digest id is empty")
 	}
-	if created.Digest.CurrentVersion != 1 {
-		t.Fatalf("created digest version = %d", created.Digest.CurrentVersion)
+	if digest.Digest.CurrentVersion != 1 {
+		t.Fatalf("created digest version = %d", digest.Digest.CurrentVersion)
 	}
 
 	updatedState := map[string]any{
@@ -61,7 +75,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		},
 		"companies": []any{},
 	}
-	saved := postJSON[revisionResponse](t, server, http.MethodPut, "/api/digests/"+created.Digest.ID+"/autosave", login.Token, map[string]any{
+	saved := postJSON[revisionResponse](t, server, http.MethodPut, "/api/digests/"+digest.Digest.ID+"/autosave", login.Token, map[string]any{
 		"title":  "June digest",
 		"state":  updatedState,
 		"action": "typed title",
@@ -70,7 +84,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		t.Fatalf("autosave revision version = %d", saved.Revision.Version)
 	}
 
-	loaded := getJSON[digestResponse](t, server, "/api/digests/"+created.Digest.ID, login.Token, http.StatusOK)
+	loaded := getJSON[digestResponse](t, server, "/api/digests/"+digest.Digest.ID, login.Token, http.StatusOK)
 	if loaded.Digest.CurrentVersion != 2 {
 		t.Fatalf("loaded version = %d", loaded.Digest.CurrentVersion)
 	}
@@ -78,11 +92,11 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		t.Fatalf("loaded state = %s", loaded.Digest.State)
 	}
 
-	revisions := getJSON[revisionsResponse](t, server, "/api/digests/"+created.Digest.ID+"/revisions", login.Token, http.StatusOK)
+	revisions := getJSON[revisionsResponse](t, server, "/api/digests/"+digest.Digest.ID+"/revisions", login.Token, http.StatusOK)
 	if len(revisions.Revisions) != 2 {
 		t.Fatalf("revision count = %d", len(revisions.Revisions))
 	}
-	openedRevision := getJSON[revisionResponse](t, server, "/api/digests/"+created.Digest.ID+"/revisions/"+revisions.Revisions[0].ID, login.Token, http.StatusOK)
+	openedRevision := getJSON[revisionResponse](t, server, "/api/digests/"+digest.Digest.ID+"/revisions/"+revisions.Revisions[0].ID, login.Token, http.StatusOK)
 	if openedRevision.Revision.Version != 1 {
 		t.Fatalf("opened revision version = %d", openedRevision.Revision.Version)
 	}
@@ -90,7 +104,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		t.Fatalf("opened revision state = %s", openedRevision.Revision.State)
 	}
 
-	rolledBack := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests/"+created.Digest.ID+"/rollback", login.Token, map[string]any{
+	rolledBack := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests/"+digest.Digest.ID+"/rollback", login.Token, map[string]any{
 		"revisionId": revisions.Revisions[0].ID,
 	}, http.StatusOK)
 	if rolledBack.Digest.CurrentVersion != 3 {
@@ -100,7 +114,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		t.Fatalf("rollback state = %s", rolledBack.Digest.State)
 	}
 
-	exported := getJSON[exportResponse](t, server, "/api/digests/"+created.Digest.ID+"/export", login.Token, http.StatusOK)
+	exported := getJSON[exportResponse](t, server, "/api/digests/"+digest.Digest.ID+"/export", login.Token, http.StatusOK)
 	if exported.SchemaVersion != 1 {
 		t.Fatalf("schema version = %d", exported.SchemaVersion)
 	}
@@ -112,8 +126,8 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 		"title": "Imported digest",
 		"state": exported.State,
 	}, http.StatusCreated)
-	if imported.Digest.ID == created.Digest.ID {
-		t.Fatalf("import reused original digest id")
+	if imported.Digest.ID == digest.Digest.ID {
+		t.Fatal("import reused original digest id")
 	}
 	if string(imported.Digest.State) != string(exported.State) {
 		t.Fatalf("imported state = %s", imported.Digest.State)
@@ -123,14 +137,13 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 func TestDigestDeleteAndRevisionPrivacy(t *testing.T) {
 	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
 
-	owner := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
-		"email":    "owner@example.com",
-		"password": "secret-123",
-	}, http.StatusCreated)
-	other := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
-		"email":    "other@example.com",
-		"password": "secret-123",
-	}, http.StatusCreated)
+	admin := setupAdmin(t, server, "11111111")
+
+	ownerCreated := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{"name": "Owner"}, http.StatusCreated)
+	otherCreated := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{"name": "Other"}, http.StatusCreated)
+
+	owner := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/login", "", map[string]any{"code": ownerCreated["user"].AccessCode}, http.StatusOK)
+	other := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/login", "", map[string]any{"code": otherCreated["user"].AccessCode}, http.StatusOK)
 
 	created := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests", owner.Token, map[string]any{
 		"title": "Private project",
@@ -168,10 +181,8 @@ func TestDigestRoutesRequireAuth(t *testing.T) {
 func TestAdminCanDeleteManagedUsers(t *testing.T) {
 	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
 
-	admin := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
-		"email":    "admin@example.com",
-		"password": "secret-123",
-	}, http.StatusCreated)
+	admin := setupAdmin(t, server, "11111111")
+
 	created := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{
 		"name": "Managed user",
 	}, http.StatusCreated)
@@ -196,18 +207,13 @@ func TestAdminCanDeleteManagedUsers(t *testing.T) {
 func TestAdminDeleteUserRequiresAdminAndDoesNotDeleteSelf(t *testing.T) {
 	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour})
 
-	admin := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
-		"email":    "admin@example.com",
-		"password": "secret-123",
-	}, http.StatusCreated)
-	regular := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/register", "", map[string]any{
-		"email":    "regular@example.com",
-		"password": "secret-123",
-	}, http.StatusCreated)
-	created := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{
-		"name": "Managed user",
-	}, http.StatusCreated)
-	managed := created["user"]
+	admin := setupAdmin(t, server, "11111111")
+
+	regularCreated := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{"name": "Regular"}, http.StatusCreated)
+	managedCreated := postJSON[map[string]User](t, server, http.MethodPost, "/api/admin/users", admin.Token, map[string]any{"name": "Managed"}, http.StatusCreated)
+
+	regular := postJSON[authResponse](t, server, http.MethodPost, "/api/auth/login", "", map[string]any{"code": regularCreated["user"].AccessCode}, http.StatusOK)
+	managed := managedCreated["user"]
 
 	deleteUser(t, server, managed.ID, regular.Token, http.StatusForbidden)
 	deleteUser(t, server, admin.User.ID, admin.Token, http.StatusForbidden)
@@ -224,10 +230,10 @@ func TestAdminDeleteUserRequiresAdminAndDoesNotDeleteSelf(t *testing.T) {
 		}
 	}
 	if !foundManaged {
-		t.Fatalf("managed user was deleted by non-admin")
+		t.Fatal("managed user was deleted by non-admin")
 	}
 	if !foundAdmin {
-		t.Fatalf("admin self-delete removed admin")
+		t.Fatal("admin self-delete removed admin")
 	}
 }
 
