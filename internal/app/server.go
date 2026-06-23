@@ -165,36 +165,48 @@ func (s *Server) handleAdminUserByID(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPatch:
 		var req struct {
-			IsAdmin bool `json:"isAdmin"`
+			Name    string `json:"name"`
+			IsAdmin *bool  `json:"isAdmin"`
 		}
 		if !readJSON(w, r, &req) {
 			return
 		}
-		if !req.IsAdmin {
-			if userID == admin.ID {
-				writeError(w, http.StatusForbidden, "cannot remove your own admin rights")
-				return
-			}
-			users, err := s.store.ListUsers(r.Context())
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "could not list users")
-				return
-			}
-			adminCount := 0
-			for _, u := range users {
-				if u.IsAdmin {
-					adminCount++
+		var user User
+		var err error
+		if req.IsAdmin != nil {
+			if !*req.IsAdmin {
+				if userID == admin.ID {
+					writeError(w, http.StatusForbidden, "cannot remove your own admin rights")
+					return
+				}
+				users, err := s.store.ListUsers(r.Context())
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "could not list users")
+					return
+				}
+				adminCount := 0
+				for _, u := range users {
+					if u.IsAdmin {
+						adminCount++
+					}
+				}
+				if adminCount <= 1 {
+					writeError(w, http.StatusForbidden, "cannot remove the last admin")
+					return
 				}
 			}
-			if adminCount <= 1 {
-				writeError(w, http.StatusForbidden, "cannot remove the last admin")
+			user, err = s.store.UpdateUserAdmin(r.Context(), userID, *req.IsAdmin)
+			if err != nil {
+				writeStoreError(w, err, "user not found")
 				return
 			}
 		}
-		user, err := s.store.UpdateUserAdmin(r.Context(), userID, req.IsAdmin)
-		if err != nil {
-			writeStoreError(w, err, "user not found")
-			return
+		if name := strings.TrimSpace(req.Name); name != "" {
+			user, err = s.store.UpdateUserName(r.Context(), userID, name)
+			if err != nil {
+				writeStoreError(w, err, "user not found")
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]User{"user": user})
 	case http.MethodDelete:

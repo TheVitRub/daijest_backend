@@ -79,6 +79,7 @@ type Store interface {
 	CreateManagedUser(ctx context.Context, name, accessCode string) (User, error)
 	ListUsers(ctx context.Context) ([]User, error)
 	UpdateUserAdmin(ctx context.Context, userID string, isAdmin bool) (User, error)
+	UpdateUserName(ctx context.Context, userID string, name string) (User, error)
 	DeleteUser(ctx context.Context, userID string) error
 
 	// Session management

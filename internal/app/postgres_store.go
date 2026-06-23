@@ -65,6 +65,13 @@ func (s *PostgresStore) UpdateUserAdmin(ctx context.Context, userID string, isAd
 	return scanUser(row)
 }
 
+func (s *PostgresStore) UpdateUserName(ctx context.Context, userID string, name string) (User, error) {
+	row := s.db.QueryRowContext(ctx, `
+		UPDATE users SET name = $1 WHERE id = $2 RETURNING `+userColumns,
+		name, userID)
+	return scanUser(row)
+}
+
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+userColumns+`

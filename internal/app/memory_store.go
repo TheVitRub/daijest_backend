@@ -103,6 +103,18 @@ func (s *MemoryStore) UpdateUserAdmin(_ context.Context, userID string, isAdmin 
 	return user, nil
 }
 
+func (s *MemoryStore) UpdateUserName(_ context.Context, userID string, name string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, ok := s.users[userID]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	user.Name = name
+	s.users[userID] = user
+	return user, nil
+}
+
 func (s *MemoryStore) ListUsers(_ context.Context) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
