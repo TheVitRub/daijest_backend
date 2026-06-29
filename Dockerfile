@@ -14,6 +14,10 @@ RUN adduser -D -H djst
 COPY --from=build /out/djst-server /app/djst-server
 COPY migrations /app/migrations
 
+# Media storage dir, owned by the non-root runtime user. A fresh named volume
+# mounted here inherits this ownership on first creation, so djst can write.
+RUN mkdir -p /app/media && chown djst /app/media
+
 USER djst
 EXPOSE 8080
 

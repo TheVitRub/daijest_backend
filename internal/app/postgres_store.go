@@ -281,6 +281,25 @@ func (s *PostgresStore) GetRevision(ctx context.Context, userID, digestID, revis
 	return scanRevision(row)
 }
 
+func (s *PostgresStore) SaveMedia(ctx context.Context, m MediaMeta) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO media (id, user_id, content_type, size, sha256)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''))
+	`, m.ID, m.UserID, m.ContentType, m.Size, m.SHA256)
+	return mapSQLError(err)
+}
+
+func (s *PostgresStore) GetMedia(ctx context.Context, id string) (MediaMeta, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id::text, user_id::text, content_type, size, COALESCE(sha256, ''), created_at
+		FROM media
+		WHERE id = $1
+	`, id)
+	var m MediaMeta
+	err := row.Scan(&m.ID, &m.UserID, &m.ContentType, &m.Size, &m.SHA256, &m.CreatedAt)
+	return m, mapSQLError(err)
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

@@ -15,6 +15,8 @@ var (
 
 type Config struct {
 	SessionTTL time.Duration
+	// MediaDir is the filesystem directory where uploaded images are stored.
+	MediaDir string
 }
 
 // DigestType categorises a digest for display and filtering purposes.
@@ -71,6 +73,17 @@ type Revision struct {
 	CreatedAt time.Time       `json:"createdAt"`
 }
 
+// MediaMeta is the database record for one uploaded image. The bytes live on
+// disk (MediaDir); only this metadata is stored in the DB.
+type MediaMeta struct {
+	ID          string
+	UserID      string
+	ContentType string
+	Size        int64
+	SHA256      string
+	CreatedAt   time.Time
+}
+
 type Store interface {
 	// User management
 	CreateUser(ctx context.Context, email, name, passwordHash string) (User, error)
@@ -94,6 +107,10 @@ type Store interface {
 	DeleteDigest(ctx context.Context, userID, digestID string) error
 	ListRevisions(ctx context.Context, userID, digestID string) ([]Revision, error)
 	GetRevision(ctx context.Context, userID, digestID, revisionID string) (Revision, error)
+
+	// Media metadata (bytes are stored on disk by the server, not here)
+	SaveMedia(ctx context.Context, m MediaMeta) error
+	GetMedia(ctx context.Context, id string) (MediaMeta, error)
 }
 
 type authResponse struct {

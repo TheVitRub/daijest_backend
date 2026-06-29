@@ -15,6 +15,7 @@ type MemoryStore struct {
 	sessions  map[string]memorySession
 	digests   map[string]Digest
 	revisions map[string][]Revision
+	media     map[string]MediaMeta
 	nextID    int
 }
 
@@ -31,6 +32,7 @@ func NewMemoryStore() *MemoryStore {
 		sessions:  map[string]memorySession{},
 		digests:   map[string]Digest{},
 		revisions: map[string][]Revision{},
+		media:     map[string]MediaMeta{},
 	}
 }
 
@@ -295,6 +297,26 @@ func (s *MemoryStore) GetRevision(_ context.Context, userID, digestID, revisionI
 		}
 	}
 	return Revision{}, ErrNotFound
+}
+
+func (s *MemoryStore) SaveMedia(_ context.Context, m MediaMeta) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = time.Now().UTC()
+	}
+	s.media[m.ID] = m
+	return nil
+}
+
+func (s *MemoryStore) GetMedia(_ context.Context, id string) (MediaMeta, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.media[id]
+	if !ok {
+		return MediaMeta{}, ErrNotFound
+	}
+	return m, nil
 }
 
 func (s *MemoryStore) hasAdminLocked() bool {

@@ -39,7 +39,10 @@ func main() {
 		log.Print("DATABASE_URL is empty, using in-memory storage for local preview")
 	}
 
-	api := app.NewServer(store, app.Config{SessionTTL: 30 * 24 * time.Hour})
+	api := app.NewServer(store, app.Config{
+		SessionTTL: 30 * 24 * time.Hour,
+		MediaDir:   env("MEDIA_DIR", "media"),
+	})
 	frontendDir := env("FRONTEND_DIR", filepath.Join("..", "frontend"))
 
 	mux := http.NewServeMux()

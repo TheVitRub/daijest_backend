@@ -35,6 +35,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/digest-types", s.handleDigestTypes)
 	mux.HandleFunc("/api/digests", s.handleDigests)
 	mux.HandleFunc("/api/digests/", s.handleDigestByID)
+	mux.HandleFunc("/api/media", s.handleMediaUpload)
+	mux.HandleFunc("/api/media/", s.handleMediaDownload)
 	mux.HandleFunc("/api/admin/users", s.handleAdminUsers)
 	mux.HandleFunc("/api/admin/users/", s.handleAdminUserByID)
 	return corsMiddleware(mux)
