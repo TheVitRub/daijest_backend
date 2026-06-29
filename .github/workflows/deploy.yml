@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Check state media migration command
+        run: go run ./cmd/migrate-state-media -h >/dev/null
+
       - name: Check deploy compose
         run: docker compose -f deploy/docker-compose.yml config >/dev/null
 
