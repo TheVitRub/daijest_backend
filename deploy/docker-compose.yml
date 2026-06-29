@@ -29,8 +29,11 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-djst}:${POSTGRES_PASSWORD:-djst}@postgres:5432/${POSTGRES_DB:-djst}?sslmode=disable
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
       MIGRATIONS_DIR: /app/migrations
+      MEDIA_DIR: /app/media
     ports:
       - "${BACKEND_PORT:-127.0.0.1:18093}:8080"
+    volumes:
+      - "${MEDIA_PATH:-./media}:/app/media"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 10s
