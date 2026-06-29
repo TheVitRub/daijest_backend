@@ -3,9 +3,11 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,7 +51,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	}
 
 	initialState := map[string]any{
-		"digestCover": "data:image/png;base64,AAA",
+		"digestCover": "/api/media/aaa",
 		"letter": map[string]any{
 			"title":      "Initial",
 			"paragraphs": "One",
@@ -68,7 +70,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	}
 
 	updatedState := map[string]any{
-		"digestCover": "data:image/png;base64,BBB",
+		"digestCover": "/api/media/bbb",
 		"letter": map[string]any{
 			"title":      "Updated",
 			"paragraphs": "Two",
@@ -88,7 +90,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	if loaded.Digest.CurrentVersion != 2 {
 		t.Fatalf("loaded version = %d", loaded.Digest.CurrentVersion)
 	}
-	if string(loaded.Digest.State) != `{"companies":[],"digestCover":"data:image/png;base64,BBB","letter":{"paragraphs":"Two","title":"Updated"}}` {
+	if string(loaded.Digest.State) != `{"companies":[],"digestCover":"/api/media/bbb","letter":{"paragraphs":"Two","title":"Updated"}}` {
 		t.Fatalf("loaded state = %s", loaded.Digest.State)
 	}
 
@@ -105,7 +107,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	if openedRevision.Revision.Version != 1 {
 		t.Fatalf("opened revision version = %d", openedRevision.Revision.Version)
 	}
-	if string(openedRevision.Revision.State) != `{"companies":[],"digestCover":"data:image/png;base64,AAA","letter":{"paragraphs":"One","title":"Initial"}}` {
+	if string(openedRevision.Revision.State) != `{"companies":[],"digestCover":"/api/media/aaa","letter":{"paragraphs":"One","title":"Initial"}}` {
 		t.Fatalf("opened revision state = %s", openedRevision.Revision.State)
 	}
 
@@ -115,7 +117,7 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	if rolledBack.Digest.CurrentVersion != 3 {
 		t.Fatalf("rollback version = %d", rolledBack.Digest.CurrentVersion)
 	}
-	if string(rolledBack.Digest.State) != `{"companies":[],"digestCover":"data:image/png;base64,AAA","letter":{"paragraphs":"One","title":"Initial"}}` {
+	if string(rolledBack.Digest.State) != `{"companies":[],"digestCover":"/api/media/aaa","letter":{"paragraphs":"One","title":"Initial"}}` {
 		t.Fatalf("rollback state = %s", rolledBack.Digest.State)
 	}
 
@@ -170,6 +172,54 @@ func TestDigestDeleteAndRevisionPrivacy(t *testing.T) {
 	listed := getJSON[digestsResponse](t, server, "/api/digests", owner.Token, http.StatusOK)
 	if len(listed.Digests) != 0 {
 		t.Fatalf("deleted digest still listed: %+v", listed.Digests)
+	}
+}
+
+func TestDigestStateInlineImagesAreStoredAsMedia(t *testing.T) {
+	mediaDir := t.TempDir()
+	server := NewServer(NewMemoryStore(), Config{SessionTTL: time.Hour, MediaDir: mediaDir})
+	auth := setupAdmin(t, server, "11111111")
+
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes())
+	created := postJSON[digestResponse](t, server, http.MethodPost, "/api/digests", auth.Token, map[string]any{
+		"title": "Media state",
+		"state": map[string]any{
+			"digestCover": dataURL,
+			"letter": map[string]any{
+				"cover": "before(" + dataURL + ")after",
+			},
+			"companies": []any{},
+		},
+	}, http.StatusCreated)
+
+	var state map[string]any
+	if err := json.Unmarshal(created.Digest.State, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	cover, _ := state["digestCover"].(string)
+	if strings.Contains(cover, "data:image/") {
+		t.Fatalf("digest cover still contains inline image: %.80s", cover)
+	}
+	if !strings.HasPrefix(cover, "/api/media/") {
+		t.Fatalf("digest cover = %q, want media URL", cover)
+	}
+	letter := state["letter"].(map[string]any)
+	letterCover, _ := letter["cover"].(string)
+	if strings.Contains(letterCover, "data:image/") {
+		t.Fatalf("letter cover still contains inline image: %.80s", letterCover)
+	}
+	if !strings.Contains(letterCover, cover) {
+		t.Fatalf("letter cover = %q, want deduped media URL %q", letterCover, cover)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, cover, nil)
+	res := httptest.NewRecorder()
+	server.Routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET converted media status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if !bytes.Equal(res.Body.Bytes(), pngBytes()) {
+		t.Fatal("converted media bytes do not match original")
 	}
 }
 

@@ -30,6 +30,7 @@ services:
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
       MIGRATIONS_DIR: /app/migrations
       MEDIA_DIR: /app/media
+      MEDIA_URL_PREFIX: ${MEDIA_URL_PREFIX:-/daijest/api/media}
     ports:
       - "${BACKEND_PORT:-127.0.0.1:18093}:8080"
     volumes:

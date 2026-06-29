@@ -323,6 +323,20 @@ func (s *MemoryStore) GetMedia(_ context.Context, id string) (MediaMeta, error) 
 	return m, nil
 }
 
+func (s *MemoryStore) FindMediaBySHA(_ context.Context, sha string) (MediaMeta, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sha == "" {
+		return MediaMeta{}, ErrNotFound
+	}
+	for _, m := range s.media {
+		if m.SHA256 == sha {
+			return m, nil
+		}
+	}
+	return MediaMeta{}, ErrNotFound
+}
+
 func (s *MemoryStore) hasAdminLocked() bool {
 	for _, u := range s.users {
 		if u.IsAdmin {

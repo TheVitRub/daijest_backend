@@ -2,9 +2,11 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +31,12 @@ var allowedMediaTypes = map[string]bool{
 	"image/webp": true,
 }
 
+var (
+	errEmptyMedia                = errors.New("empty media")
+	errMediaStorageNotConfigured = errors.New("media storage not configured")
+	errUnsupportedMediaType      = errors.New("unsupported image type")
+)
+
 func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -43,6 +51,65 @@ func newUUID() (string, error) {
 // pairs to avoid one giant directory: <dir>/3f/2e/<id>.
 func (s *Server) mediaPath(id string) string {
 	return filepath.Join(s.cfg.MediaDir, id[0:2], id[2:4], id)
+}
+
+func (s *Server) saveMediaBytes(ctx context.Context, userID string, data []byte) (MediaMeta, error) {
+	if s.cfg.MediaDir == "" {
+		return MediaMeta{}, errMediaStorageNotConfigured
+	}
+	if len(data) == 0 {
+		return MediaMeta{}, errEmptyMedia
+	}
+	headLen := len(data)
+	if headLen > 512 {
+		headLen = 512
+	}
+	contentType := http.DetectContentType(data[:headLen])
+	if !allowedMediaTypes[contentType] {
+		return MediaMeta{}, errUnsupportedMediaType
+	}
+
+	sum := sha256.Sum256(data)
+	sha := hex.EncodeToString(sum[:])
+	if existing, err := s.store.FindMediaBySHA(ctx, sha); err == nil {
+		if _, statErr := os.Stat(s.mediaPath(existing.ID)); statErr == nil {
+			return existing, nil
+		} else if !os.IsNotExist(statErr) {
+			return MediaMeta{}, statErr
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return MediaMeta{}, err
+	}
+
+	id, err := newUUID()
+	if err != nil {
+		return MediaMeta{}, err
+	}
+	dst := s.mediaPath(id)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return MediaMeta{}, err
+	}
+	if existing, err := os.ReadFile(dst); err == nil && !bytes.Equal(existing, data) {
+		return MediaMeta{}, fmt.Errorf("media path collision: %s", dst)
+	} else if err != nil && !os.IsNotExist(err) {
+		return MediaMeta{}, err
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		return MediaMeta{}, err
+	}
+
+	meta := MediaMeta{
+		ID:          id,
+		UserID:      userID,
+		ContentType: contentType,
+		Size:        int64(len(data)),
+		SHA256:      sha,
+	}
+	if err := s.store.SaveMedia(ctx, meta); err != nil {
+		_ = os.Remove(dst)
+		return MediaMeta{}, err
+	}
+	return meta, nil
 }
 
 // handleMediaUpload accepts one image (multipart field "file") from an

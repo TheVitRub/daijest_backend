@@ -300,6 +300,19 @@ func (s *PostgresStore) GetMedia(ctx context.Context, id string) (MediaMeta, err
 	return m, mapSQLError(err)
 }
 
+func (s *PostgresStore) FindMediaBySHA(ctx context.Context, sha string) (MediaMeta, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id::text, user_id::text, content_type, size, COALESCE(sha256, ''), created_at
+		FROM media
+		WHERE sha256 = $1
+		ORDER BY created_at ASC
+		LIMIT 1
+	`, sha)
+	var m MediaMeta
+	err := row.Scan(&m.ID, &m.UserID, &m.ContentType, &m.Size, &m.SHA256, &m.CreatedAt)
+	return m, mapSQLError(err)
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

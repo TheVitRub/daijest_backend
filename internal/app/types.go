@@ -16,7 +16,8 @@ var (
 type Config struct {
 	SessionTTL time.Duration
 	// MediaDir is the filesystem directory where uploaded images are stored.
-	MediaDir string
+	MediaDir       string
+	MediaURLPrefix string
 }
 
 // DigestType categorises a digest for display and filtering purposes.
@@ -111,6 +112,7 @@ type Store interface {
 	// Media metadata (bytes are stored on disk by the server, not here)
 	SaveMedia(ctx context.Context, m MediaMeta) error
 	GetMedia(ctx context.Context, id string) (MediaMeta, error)
+	FindMediaBySHA(ctx context.Context, sha string) (MediaMeta, error)
 }
 
 type authResponse struct {

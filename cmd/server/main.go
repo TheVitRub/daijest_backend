@@ -40,8 +40,9 @@ func main() {
 	}
 
 	api := app.NewServer(store, app.Config{
-		SessionTTL: 30 * 24 * time.Hour,
-		MediaDir:   env("MEDIA_DIR", "media"),
+		SessionTTL:     30 * 24 * time.Hour,
+		MediaDir:       env("MEDIA_DIR", "media"),
+		MediaURLPrefix: env("MEDIA_URL_PREFIX", "/api/media"),
 	})
 	frontendDir := env("FRONTEND_DIR", filepath.Join("..", "frontend"))
 

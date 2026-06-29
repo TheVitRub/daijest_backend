@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
 )
 
 type Server struct {
@@ -58,7 +57,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
-
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -250,7 +248,7 @@ func (s *Server) handleDigests(w http.ResponseWriter, r *http.Request) {
 		if !readJSON(w, r, &req) {
 			return
 		}
-		state, ok := normalizeState(w, req.State)
+		state, ok := s.normalizeState(w, r, user.ID, req.State)
 		if !ok {
 			return
 		}
@@ -338,7 +336,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, user User)
 	if !readJSON(w, r, &req) {
 		return
 	}
-	state, ok := normalizeState(w, req.State)
+	state, ok := s.normalizeState(w, r, user.ID, req.State)
 	if !ok {
 		return
 	}
@@ -364,7 +362,7 @@ func (s *Server) handleAutosave(w http.ResponseWriter, r *http.Request, user Use
 	if !readJSON(w, r, &req) {
 		return
 	}
-	state, ok := normalizeState(w, req.State)
+	state, ok := s.normalizeState(w, r, user.ID, req.State)
 	if !ok {
 		return
 	}
@@ -419,12 +417,16 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, user Use
 		writeStoreError(w, err, "revision not found")
 		return
 	}
+	state, ok := s.normalizeState(w, r, user.ID, revision.State)
+	if !ok {
+		return
+	}
 	current, err := s.store.GetDigest(r.Context(), user.ID, digestID)
 	if err != nil {
 		writeStoreError(w, err, "digest not found")
 		return
 	}
-	digest, _, err := s.store.AutosaveDigest(r.Context(), user.ID, digestID, current.Title, current.DigestType, revision.State, "rollback to version "+itoa(revision.Version))
+	digest, _, err := s.store.AutosaveDigest(r.Context(), user.ID, digestID, current.Title, current.DigestType, state, "rollback to version "+itoa(revision.Version))
 	if err != nil {
 		writeStoreError(w, err, "digest not found")
 		return
@@ -536,7 +538,7 @@ func defaultAction(action, fallback string) string {
 	return action
 }
 
-func normalizeState(w http.ResponseWriter, raw json.RawMessage) (json.RawMessage, bool) {
+func (s *Server) normalizeState(w http.ResponseWriter, r *http.Request, userID string, raw json.RawMessage) (json.RawMessage, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		raw = json.RawMessage(`{}`)
 	}
@@ -545,6 +547,16 @@ func normalizeState(w http.ResponseWriter, raw json.RawMessage) (json.RawMessage
 		writeError(w, http.StatusBadRequest, "state must be valid json")
 		return nil, false
 	}
+	next, _, err := s.replaceInlineStateMedia(r.Context(), userID, value)
+	if err != nil {
+		if errors.Is(err, errInvalidInlineImage) || errors.Is(err, errEmptyMedia) || errors.Is(err, errUnsupportedMediaType) {
+			writeError(w, http.StatusBadRequest, "state contains invalid inline image")
+			return nil, false
+		}
+		writeError(w, http.StatusInternalServerError, "could not store inline image")
+		return nil, false
+	}
+	value = next
 	normalized, err := json.Marshal(value)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "state must be valid json")
