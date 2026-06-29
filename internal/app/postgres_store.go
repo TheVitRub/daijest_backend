@@ -251,7 +251,7 @@ func (s *PostgresStore) ListRevisions(ctx context.Context, userID, digestID stri
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, digest_id::text, version, action, state, created_at
+		SELECT id::text, digest_id::text, version, action, created_at
 		FROM digest_revisions
 		WHERE digest_id = $1 AND user_id = $2
 		ORDER BY version ASC
@@ -263,7 +263,7 @@ func (s *PostgresStore) ListRevisions(ctx context.Context, userID, digestID stri
 
 	var revisions []Revision
 	for rows.Next() {
-		revision, err := scanRevision(rows)
+		revision, err := scanRevisionMeta(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -331,6 +331,12 @@ func scanRevision(row scanner) (Revision, error) {
 	var raw []byte
 	err := row.Scan(&revision.ID, &revision.DigestID, &revision.Version, &revision.Action, &raw, &revision.CreatedAt)
 	revision.State = cloneRaw(raw)
+	return revision, mapSQLError(err)
+}
+
+func scanRevisionMeta(row scanner) (Revision, error) {
+	var revision Revision
+	err := row.Scan(&revision.ID, &revision.DigestID, &revision.Version, &revision.Action, &revision.CreatedAt)
 	return revision, mapSQLError(err)
 }
 

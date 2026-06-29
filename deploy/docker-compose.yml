@@ -20,6 +20,7 @@ services:
     build:
       context: ./backend
     container_name: daijest_backend
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy

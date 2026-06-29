@@ -279,7 +279,11 @@ func (s *MemoryStore) ListRevisions(_ context.Context, userID, digestID string) 
 	if !ok || digest.UserID != userID {
 		return nil, ErrNotFound
 	}
-	revisions := append([]Revision(nil), s.revisions[digest.ID]...)
+	revisions := make([]Revision, 0, len(s.revisions[digest.ID]))
+	for _, revision := range s.revisions[digest.ID] {
+		revision.State = nil
+		revisions = append(revisions, revision)
+	}
 	return revisions, nil
 }
 

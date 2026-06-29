@@ -96,6 +96,11 @@ func TestAuthDigestAutosaveRollbackAndExport(t *testing.T) {
 	if len(revisions.Revisions) != 2 {
 		t.Fatalf("revision count = %d", len(revisions.Revisions))
 	}
+	for _, revision := range revisions.Revisions {
+		if len(revision.State) != 0 {
+			t.Fatalf("revision list returned state for version %d", revision.Version)
+		}
+	}
 	openedRevision := getJSON[revisionResponse](t, server, "/api/digests/"+digest.Digest.ID+"/revisions/"+revisions.Revisions[0].ID, login.Token, http.StatusOK)
 	if openedRevision.Revision.Version != 1 {
 		t.Fatalf("opened revision version = %d", openedRevision.Revision.Version)
