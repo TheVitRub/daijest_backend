@@ -1,24 +1,25 @@
-name: Deploy backend
+name: Backend CI
 
 on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
-  group: daijest-production-deploy
-  cancel-in-progress: false
+  group: daijest-backend-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout backend
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -33,66 +34,3 @@ jobs:
 
       - name: Check deploy compose
         run: docker compose -f deploy/docker-compose.yml config >/dev/null
-
-      - name: Deploy backend over SSH
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
-          REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-
-          APP_DIR='${{ secrets.APP_DIR }}'
-          if [ -z "$APP_DIR" ]; then
-            APP_DIR="$(ssh -i ~/.ssh/deploy_key "$REMOTE" 'printf "%s" "$HOME/daijest"')"
-          fi
-          APP_DIR_Q="$(printf '%q' "$APP_DIR")"
-          ARTIFACT="$(mktemp -t daijest-backend.XXXXXX.tar.gz)"
-
-          tar --exclude='.git' -czf "$ARTIFACT" .
-          ssh -i ~/.ssh/deploy_key "$REMOTE" "mkdir -p $APP_DIR_Q/.deploy"
-          ssh -i ~/.ssh/deploy_key "$REMOTE" "cat > $APP_DIR_Q/docker-compose.yml" < deploy/docker-compose.yml
-          ssh -i ~/.ssh/deploy_key "$REMOTE" "cat > $APP_DIR_Q/.env.example" < deploy/.env.example
-          ssh -i ~/.ssh/deploy_key "$REMOTE" "cat > $APP_DIR_Q/.deploy/backend.tar.gz" < "$ARTIFACT"
-
-          ssh -i ~/.ssh/deploy_key "$REMOTE" "APP_DIR=$APP_DIR_Q bash -s" <<'REMOTE'
-          set -Eeuo pipefail
-
-          APP_DIR="${APP_DIR:-$HOME/daijest}"
-          mkdir -p "$APP_DIR"
-          cd "$APP_DIR"
-          if [ ! -f .env ]; then
-            cp .env.example .env
-          else
-            migrate_default_env() {
-              key="$1"
-              old_value="$2"
-              new_value="$3"
-
-              if grep -qx "${key}=${old_value}" .env; then
-                sed -i "s|^${key}=.*|${key}=${new_value}|" .env
-              fi
-            }
-
-            migrate_default_env POSTGRES_PORT 5432 127.0.0.1:15436
-            migrate_default_env BACKEND_PORT 8080 127.0.0.1:18093
-            migrate_default_env FRONTEND_PORT 5173 172.17.0.1:5178
-          fi
-
-          exec 9>.deploy.lock
-          flock 9
-
-          rm -rf .deploy/backend.release
-          mkdir -p .deploy/backend.release
-          tar -xzf .deploy/backend.tar.gz -C .deploy/backend.release
-          rm -rf backend
-          mv .deploy/backend.release backend
-
-          docker compose -p daijest up -d postgres
-          docker compose -p daijest build backend
-          docker compose -p daijest up -d --no-build --remove-orphans backend
-          docker compose -p daijest ps
-          REMOTE
