@@ -10,16 +10,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/djst-server ./cmd/server
 FROM alpine:3.22
 
 WORKDIR /app
-RUN adduser -D -H djst
+RUN apk add --no-cache su-exec && adduser -D -H djst
 COPY --from=build /out/djst-server /app/djst-server
 COPY migrations /app/migrations
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
-# Media storage dir, owned by the non-root runtime user. A fresh named volume
-# mounted here inherits this ownership on first creation, so djst can write.
-RUN mkdir -p /app/media && chown djst /app/media
+# Media storage dir, owned by the non-root runtime user. The entrypoint repeats
+# this for bind mounts, because a host directory can hide image ownership.
+RUN mkdir -p /app/media && chown djst:djst /app/media && chmod 0755 /app/docker-entrypoint.sh
 
-USER djst
 EXPOSE 8080
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/djst-server"]
-
